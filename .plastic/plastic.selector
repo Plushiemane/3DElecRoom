@@ -1,0 +1,4 @@
+repository "3DElecRoom 2025-10-14_18-04-38/3DElecRoom@1375864138350@cloud"
+  path "/"
+    br "/main"
+    co "/main"
