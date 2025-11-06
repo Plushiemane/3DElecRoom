@@ -1,0 +1,65 @@
+# ============ Unity Core ============
+
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Mm]emoryCaptures/
+
+# Generated local cache
+UserSettings/
+
+# ============ IDE stuff ============
+.vscode/
+.idea/
+*.suo
+*.user
+*.userprefs
+*.csproj
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+*.unityproj
+
+# ============ OS junk ============
+.DS_Store
+Thumbs.db
+
+# ============ Crash reports ============
+sysinfo.txt
+
+# ============ Visual Studio / .NET crap ============
+.vs/
+*.dbmdl
+*.bak
+*.tmp
+*.log
+
+# ============ Package Manager ============
+Packages/com.unity.package-manager/
+Packages/com.unity.package-manager-lock.json
+
+# ============ Rider ============
+.idea/
+*.sln.iml
+
+# ============ Build artifacts ============
+*.apk
+*.aab
+*.xcodeproj/
+*.xcworkspace/
+*.xcuserstate
+*.exe
+*.app
+*.dll
+*.so
+
+# ============ Addressables / Cache ============
+/Assets/AddressableAssetsData/*/*.bin
+/Assets/StreamingAssets/aa/*
