@@ -4831,7 +4831,7 @@ MonoBehaviour:
   rotationSpeed: 90
   greenLight: {fileID: 1707121953}
   redLight: {fileID: 1861330245}
-  apiUrl: http://localhost:2020
+  apiUrl: http://192.168.1.107:2020/
 --- !u!1 &1510877608
 GameObject:
   m_ObjectHideFlags: 0

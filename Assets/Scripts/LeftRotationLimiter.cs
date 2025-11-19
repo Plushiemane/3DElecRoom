@@ -16,7 +16,7 @@ public class LeftRotationLimiter : MonoBehaviour
     private bool isMovingForward = false;
 
     private float targetRotation = 0f;
-    public string apiUrl = "http://localhost:2020";
+    public string apiUrl = "http://192.168.1.107:2020/";
     
     void Awake()
     {
@@ -47,9 +47,9 @@ public class LeftRotationLimiter : MonoBehaviour
         HandleRotation(isMovingForward);
     }
 
-    private IEnumerator SendAPIRequest()
+    private IEnumerator SendAPIRequest(string url)
     {
-        using (UnityWebRequest request = UnityWebRequest.PostWwwForm(apiUrl, ""))
+        using (UnityWebRequest request = UnityWebRequest.PostWwwForm(url, ""))
         {
             yield return request.SendWebRequest();
 
@@ -85,7 +85,7 @@ public class LeftRotationLimiter : MonoBehaviour
                 master.localEulerAngles = new Vector3(-90f, 0f, 90f);
                 follower.localEulerAngles = new Vector3(-90f, 0f, 90f);
                 UpdateLights("green");
-                StartCoroutine(SendAPIRequest());
+                StartCoroutine(SendAPIRequest(apiUrl+"on"));
                 return;
             }
         }
@@ -106,6 +106,7 @@ public class LeftRotationLimiter : MonoBehaviour
                 master.localEulerAngles = new Vector3(0f, 0f,90f);
                 follower.localEulerAngles = new Vector3(0f, 0f,90f);
                 UpdateLights("red");
+                StartCoroutine(SendAPIRequest(apiUrl+"off"));
                 return;
             }
         }
