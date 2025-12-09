@@ -16,6 +16,9 @@ public class SmartPathVisualizer : MonoBehaviour
     public TMP_Text StatusText;
     public Button DebugButton;
 
+    [Header("Player Reference")]
+    public Transform PlayerTransform; // Drag your Player/MainCamera here
+
     [Header("Visual Settings")]
     public Material LineMaterial;
     public float LineHeight = 0.1f;
@@ -23,6 +26,7 @@ public class SmartPathVisualizer : MonoBehaviour
     public Color PanelToRack1Color = Color.cyan;
     public Color Rack1ToRack2Color = Color.green;
     public Color Rack2ToPanelColor = Color.yellow;
+    public Color PlayerToRack1Color = Color.magenta;
     public Color BoundingBoxColor = new Color(1f, 0.5f, 0f, 0.3f);
     public Color ConnectionColor = new Color(0.5f, 0.5f, 1f, 0.2f);
     public Color GridColor = new Color(0.3f, 0.3f, 0.3f, 0.1f);
@@ -30,7 +34,7 @@ public class SmartPathVisualizer : MonoBehaviour
     [Header("Pathfinding Settings")]
     public float UpdateFrequency = 0.5f;
     public float SafeDistance = 2f;
-    public float MaxConnectionDistance = 5f; // Reduced for better pathfinding
+    public float MaxConnectionDistance = 5f;
     public bool ShowBoundingBox = true;
     public bool ShowConnections = false;
     public bool ShowGrid = false;
@@ -40,12 +44,19 @@ public class SmartPathVisualizer : MonoBehaviour
     public Transform ManualDashboard;
     public List<Transform> ManualRacks = new List<Transform>();
 
+    [Header("Path Behavior Settings")]
+    public float ProximityThreshold = 1.0f; // How close player needs to be to "reach" a point
+
     private List<SmartPathNode> nodes = new List<SmartPathNode>();
     private Dictionary<string, SmartPathNode> nodeMap = new Dictionary<string, SmartPathNode>();
     private List<GameObject> visualObjects = new List<GameObject>();
+    private List<GameObject> pathVisuals = new List<GameObject>();
+    private List<GameObject> debugVisuals = new List<GameObject>();
+    
     private SmartPathNode panelNode;
     private SmartPathNode rack1Node;
     private SmartPathNode rack2Node;
+    private SmartPathNode playerNode;
     
     private Bounds racksBounds;
     private List<Vector3> boundingBoxCorners = new List<Vector3>();
@@ -54,8 +65,17 @@ public class SmartPathVisualizer : MonoBehaviour
     
     private float lastUpdateTime = 0f;
     private bool isRealtime = false;
-    private Transform playerTransform;
     private Vector3 lastPlayerPosition;
+
+    private PathState currentPathState = PathState.NotStarted;
+    private enum PathState
+    {
+        NotStarted,      // No path active
+        ToFirstRack,     // Going to first rack
+        ToSecondRack,    // Going to second rack
+        BackToDashboard, // Returning to dashboard
+        Complete         // Mission complete
+    }
 
     void Start()
     {
@@ -69,7 +89,6 @@ public class SmartPathVisualizer : MonoBehaviour
             DebugButton.onClick.AddListener(OnDebugConnections);
 
         InitializeSystem();
-        FindPlayer();
         
         UpdateStatus("System initialized. Select racks and click Visualize.");
     }
@@ -78,23 +97,34 @@ public class SmartPathVisualizer : MonoBehaviour
     {
         LoadAllNodes();
         FindPanelNode();
+        CreatePlayerNode();
         CalculateRacksBoundingBox();
-        CreateGridNodes(); // Create a grid for pathfinding
+        CreateGridNodes();
         GenerateNavigationGrid();
         FillDropdowns();
         
         LogConnectivityInfo();
     }
 
-    void FindPlayer()
+    void CreatePlayerNode()
     {
-        GameObject player = GameObject.FindGameObjectWithTag("Player");
-        if (player != null)
+        playerNode = new SmartPathNode("Player", null, SmartPathNode.NodeType.Player);
+        
+        if (PlayerTransform != null)
         {
-            playerTransform = player.transform;
-            lastPlayerPosition = playerTransform.position;
-            Debug.Log($"Player found at: {playerTransform.position}");
+            playerNode.Position = PlayerTransform.position;
+            lastPlayerPosition = PlayerTransform.position;
+            Debug.Log($"Player assigned at: {playerNode.Position}");
         }
+        else
+        {
+            playerNode.Position = Vector3.zero;
+            lastPlayerPosition = Vector3.zero;
+            Debug.LogWarning("Player Transform not assigned. Using origin.");
+        }
+        
+        playerNode.OriginalPosition = playerNode.Position;
+        nodes.Add(playerNode);
     }
 
     void LoadAllNodes()
@@ -104,7 +134,6 @@ public class SmartPathVisualizer : MonoBehaviour
         boundaryNodes.Clear();
         gridNodes.Clear();
 
-        // Use manual racks if provided
         if (ManualRacks != null && ManualRacks.Count > 0)
         {
             foreach (var rackTransform in ManualRacks)
@@ -128,7 +157,6 @@ public class SmartPathVisualizer : MonoBehaviour
 
     void FindRacksAutomatically()
     {
-        // Find objects that look like racks
         var allTransforms = FindObjectsOfType<Transform>();
         foreach (var t in allTransforms)
         {
@@ -196,7 +224,6 @@ public class SmartPathVisualizer : MonoBehaviour
             racksBounds.Encapsulate(node.Position);
         }
 
-        // Expand bounds
         racksBounds.Expand(SafeDistance * 2);
 
         boundingBoxCorners.Clear();
@@ -219,7 +246,6 @@ public class SmartPathVisualizer : MonoBehaviour
                 float posX = racksBounds.min.x + (x * cellSize);
                 float posZ = racksBounds.min.z + (z * cellSize);
                 
-                // Skip if too close to a rack
                 bool tooCloseToRack = false;
                 foreach (var rack in nodes.Where(n => n.Type == SmartPathNode.NodeType.Rack))
                 {
@@ -252,25 +278,26 @@ public class SmartPathVisualizer : MonoBehaviour
 
     void GenerateNavigationGrid()
     {
-        // Clear all connections
         foreach (var node in nodes)
         {
             node.Neighbors.Clear();
         }
 
-        // Connect grid nodes in a proper grid pattern
         ConnectGridNodes();
 
-        // Connect racks to nearest grid nodes
         foreach (var rack in nodes.Where(n => n.Type == SmartPathNode.NodeType.Rack))
         {
             ConnectToNearestGridNodes(rack, 2);
         }
 
-        // Connect panel to nearest grid nodes
         if (panelNode != null)
         {
             ConnectToNearestGridNodes(panelNode, 2);
+        }
+
+        if (playerNode != null)
+        {
+            ConnectPlayerToGrid();
         }
 
         UpdateStatus($"Grid: {nodes.Count} nodes ({gridNodes.Count} grid nodes)");
@@ -278,7 +305,6 @@ public class SmartPathVisualizer : MonoBehaviour
 
     void ConnectGridNodes()
     {
-        // Organize grid nodes by position
         var gridByCoord = new Dictionary<Vector2Int, SmartPathNode>();
         float cellSize = Mathf.Max(racksBounds.size.x, racksBounds.size.z) / GridResolution;
         
@@ -289,18 +315,16 @@ public class SmartPathVisualizer : MonoBehaviour
             gridByCoord[new Vector2Int(gridX, gridZ)] = node;
         }
 
-        // Connect grid nodes to their neighbors (4-directional)
         foreach (var kvp in gridByCoord)
         {
             var coord = kvp.Key;
             var node = kvp.Value;
 
-            // Check all 4 directions
             Vector2Int[] directions = {
-                new Vector2Int(1, 0),  // right
-                new Vector2Int(-1, 0), // left
-                new Vector2Int(0, 1),  // forward
-                new Vector2Int(0, -1)  // back
+                new Vector2Int(1, 0),
+                new Vector2Int(-1, 0),
+                new Vector2Int(0, 1),
+                new Vector2Int(0, -1)
             };
 
             foreach (var dir in directions)
@@ -309,7 +333,7 @@ public class SmartPathVisualizer : MonoBehaviour
                 if (gridByCoord.TryGetValue(neighborCoord, out var neighbor))
                 {
                     float distance = Vector3.Distance(node.Position, neighbor.Position);
-                    if (distance <= cellSize * 1.5f) // Allow diagonal-ish connections
+                    if (distance <= cellSize * 1.5f)
                     {
                         node.Neighbors.Add(neighbor);
                         neighbor.Neighbors.Add(node);
@@ -335,6 +359,20 @@ public class SmartPathVisualizer : MonoBehaviour
                 gridNode.Neighbors.Add(node);
             }
         }
+    }
+
+    void ConnectPlayerToGrid()
+    {
+        if (playerNode == null) return;
+        
+        // Clear player's existing connections
+        foreach (var neighbor in new List<SmartPathNode>(playerNode.Neighbors))
+        {
+            playerNode.Neighbors.Remove(neighbor);
+            neighbor.Neighbors.Remove(playerNode);
+        }
+        
+        ConnectToNearestGridNodes(playerNode, 3);
     }
 
     void FillDropdowns()
@@ -364,6 +402,137 @@ public class SmartPathVisualizer : MonoBehaviour
         }
     }
 
+    void Update()
+    {
+        if (!isRealtime || PlayerTransform == null) return;
+        
+        if (Time.time - lastUpdateTime >= UpdateFrequency)
+        {
+            UpdatePlayerPosition();
+            UpdatePathState(); // Check if player reached points
+            lastUpdateTime = Time.time;
+        }
+    }
+
+    void UpdatePlayerPosition()
+    {
+        if (PlayerTransform == null) return;
+
+        Vector3 currentPos = PlayerTransform.position;
+
+        if (Vector3.Distance(currentPos, lastPlayerPosition) > 0.1f)
+        {
+            lastPlayerPosition = currentPos;
+
+            if (playerNode != null)
+            {
+                playerNode.Position = currentPos;
+                ConnectPlayerToGrid();
+
+                // Refresh currently relevant path segment based on state
+                ClearPathVisualsOnly();
+                switch (currentPathState)
+                {
+                    case PathState.ToFirstRack:
+                        CalculateAndVisualizeOptimalPath(); // draws first segment only in realtime
+                        break;
+                    case PathState.ToSecondRack:
+                        ShowPathToSecondRackOnly();
+                        break;
+                    case PathState.BackToDashboard:
+                        ShowPathBackToDashboardOnly();
+                        break;
+                    default:
+                        // No active path
+                        break;
+                }
+            }
+        }
+    }
+
+    void UpdatePathState()
+    {
+        if (currentPathState == PathState.NotStarted || rack1Node == null || rack2Node == null)
+            return;
+
+        float distanceToFirstRack = Vector3.Distance(PlayerTransform.position, rack1Node.Position);
+        float distanceToSecondRack = Vector3.Distance(PlayerTransform.position, rack2Node.Position);
+        float distanceToDashboard = panelNode != null ? Vector3.Distance(PlayerTransform.position, panelNode.Position) : float.MaxValue;
+
+        switch (currentPathState)
+        {
+            case PathState.ToFirstRack:
+                if (distanceToFirstRack <= ProximityThreshold)
+                {
+                    // Player reached first rack - clear old path and show path to second rack
+                    Debug.Log("Reached first rack! Updating path to second rack.");
+                    currentPathState = PathState.ToSecondRack;
+                    ClearPathVisualsOnly();
+                    ShowPathToSecondRackOnly();
+                    UpdateStatus("Reached Rack 1! Path updated to Rack 2");
+                }
+                break;
+                
+            case PathState.ToSecondRack:
+                if (distanceToSecondRack <= ProximityThreshold)
+                {
+                    // Player reached second rack - clear old path and show path back to dashboard
+                    Debug.Log("Reached second rack! Updating path back to dashboard.");
+                    currentPathState = PathState.BackToDashboard;
+                    ClearPathVisualsOnly();
+                    ShowPathBackToDashboardOnly();
+                    UpdateStatus("Reached Rack 2! Path updated back to Dashboard");
+                }
+                break;
+                
+            case PathState.BackToDashboard:
+                if (panelNode != null && distanceToDashboard <= ProximityThreshold)
+                {
+                    // Player returned to dashboard - clear all lines
+                    Debug.Log("Returned to dashboard! Clearing all paths.");
+                    currentPathState = PathState.Complete;
+                    ClearPathVisualsOnly();
+                    UpdateStatus("Mission complete! All paths cleared.");
+                    
+                    // Reset for next visualization
+                    currentPathState = PathState.NotStarted;
+                }
+                break;
+        }
+    }
+
+    void ShowPathToSecondRackOnly()
+    {
+        if (rack1Node == null || rack2Node == null || playerNode == null) return;
+        
+        // Only draw path from current position to second rack
+        playerNode.Position = PlayerTransform.position;
+        ConnectPlayerToGrid();
+        
+        var pathToSecondRack = FindPathAStar(playerNode, rack2Node);
+        if (pathToSecondRack != null)
+        {
+            DrawPathLines(pathToSecondRack, Rack1ToRack2Color, "Player_to_Rack2_Only");
+            DrawPathWaypoints(pathToSecondRack, Rack1ToRack2Color);
+        }
+    }
+
+    void ShowPathBackToDashboardOnly()
+    {
+        if (playerNode == null || panelNode == null) return;
+        
+        // Only draw path from current position back to dashboard
+        playerNode.Position = PlayerTransform.position;
+        ConnectPlayerToGrid();
+        
+        var pathToDashboard = FindPathAStar(playerNode, panelNode);
+        if (pathToDashboard != null)
+        {
+            DrawPathLines(pathToDashboard, Rack2ToPanelColor, "Player_to_Dashboard_Only");
+            DrawPathWaypoints(pathToDashboard, Rack2ToPanelColor);
+        }
+    }
+
     public void OnVisualizePath()
     {
         if (panelNode == null)
@@ -390,6 +559,10 @@ public class SmartPathVisualizer : MonoBehaviour
         rack1Node = nodeMap[rack1Name];
         rack2Node = nodeMap[rack2Name];
 
+        // Reset state
+        currentPathState = PathState.ToFirstRack;
+        
+        // Clear all visuals when manually visualizing
         ClearVisuals();
         
         if (ShowGrid)
@@ -407,47 +580,76 @@ public class SmartPathVisualizer : MonoBehaviour
             DrawAllConnections();
         }
         
+        // Start with full path visualization (will conditionally draw in realtime)
         CalculateAndVisualizeOptimalPath();
         
-        UpdateStatus($"Visualizing: Dashboard → {rack1Name} → {rack2Name} → Dashboard");
+        UpdateStatus($"Started: {(isRealtime ? "Player" : "Dashboard")} → {rack1Name} → {rack2Name} → {(isRealtime ? "Player" : "Dashboard")}");
     }
 
     void CalculateAndVisualizeOptimalPath()
     {
-        if (panelNode == null || rack1Node == null || rack2Node == null) return;
+        if (rack1Node == null || rack2Node == null) return;
 
-        // Use A* for proper pathfinding
-        var path1 = FindPathAStar(panelNode, rack1Node);
-        var path2 = FindPathAStar(rack1Node, rack2Node);
-        var path3 = FindPathAStar(rack2Node, panelNode);
-
-        if (path1 == null || path2 == null || path3 == null)
+        SmartPathNode startNode = isRealtime ? playerNode : panelNode;
+        if (startNode == null)
         {
-            UpdateStatus("WARNING: Could not find complete path. Check connections.");
+            UpdateStatus("ERROR: Start node not found!");
             return;
         }
 
-        DrawPathLines(path1, PanelToRack1Color, "Dashboard_to_Rack1");
-        DrawPathLines(path2, Rack1ToRack2Color, "Rack1_to_Rack2");
-        DrawPathLines(path3, Rack2ToPanelColor, "Rack2_to_Dashboard");
+        Debug.Log($"Calculating paths from {startNode.Name} at {startNode.Position}");
 
-        // Draw waypoints for debugging
-        DrawPathWaypoints(path1, PanelToRack1Color);
-        DrawPathWaypoints(path2, Rack1ToRack2Color);
-        DrawPathWaypoints(path3, Rack2ToPanelColor);
+        Color firstSegmentColor = isRealtime ? PlayerToRack1Color : PanelToRack1Color;
+        string firstSegmentName = isRealtime ? "Player_to_Rack1" : "Dashboard_to_Rack1";
+        Color lastSegmentColor = isRealtime ? PlayerToRack1Color : Rack2ToPanelColor;
+        string lastSegmentName = isRealtime ? "Rack2_to_Player" : "Rack2_to_Dashboard";
+        
+        var path1 = FindPathAStar(startNode, rack1Node);
+        var path2 = FindPathAStar(rack1Node, rack2Node);
+        var path3 = FindPathAStar(rack2Node, startNode);
 
-        UpdateStatus($"Path calculated: {path1.Count + path2.Count + path3.Count - 3} segments");
+        if (path1 == null || path2 == null || path3 == null)
+        {
+            UpdateStatus("WARNING: Could not find complete path.");
+            return;
+        }
+
+        // Only draw the first segment initially if we're in realtime mode
+        if (isRealtime && currentPathState == PathState.ToFirstRack)
+        {
+            ClearPathVisualsOnly();
+            DrawPathLines(path1, firstSegmentColor, firstSegmentName);
+            DrawPathWaypoints(path1, firstSegmentColor);
+            UpdateStatus($"Following path to Rack 1... (Get within {ProximityThreshold}m)");
+        }
+        else if (!isRealtime)
+        {
+            // Non-realtime mode shows all paths
+            ClearPathVisualsOnly();
+            DrawPathLines(path1, firstSegmentColor, firstSegmentName);
+            DrawPathLines(path2, Rack1ToRack2Color, "Rack1_to_Rack2");
+            DrawPathLines(path3, lastSegmentColor, lastSegmentName);
+
+            DrawPathWaypoints(path1, firstSegmentColor);
+            DrawPathWaypoints(path2, Rack1ToRack2Color);
+            DrawPathWaypoints(path3, lastSegmentColor);
+
+            UpdateStatus($"Path calculated: {path1.Count + path2.Count + path3.Count - 3} segments");
+        }
     }
 
+    // Add back missing pathfinding helpers (A*)
     List<SmartPathNode> FindPathAStar(SmartPathNode start, SmartPathNode goal)
     {
+        if (start == null || goal == null) return null;
+
         var openSet = new HashSet<SmartPathNode> { start };
         var closedSet = new HashSet<SmartPathNode>();
         var cameFrom = new Dictionary<SmartPathNode, SmartPathNode>();
         var gScore = new Dictionary<SmartPathNode, float>();
         var fScore = new Dictionary<SmartPathNode, float>();
 
-        gScore[start] = 0;
+        gScore[start] = 0f;
         fScore[start] = Heuristic(start, goal);
 
         while (openSet.Count > 0)
@@ -455,9 +657,7 @@ public class SmartPathVisualizer : MonoBehaviour
             var current = openSet.OrderBy(n => fScore.ContainsKey(n) ? fScore[n] : float.MaxValue).First();
 
             if (current == goal)
-            {
                 return ReconstructPath(cameFrom, current);
-            }
 
             openSet.Remove(current);
             closedSet.Add(current);
@@ -466,7 +666,7 @@ public class SmartPathVisualizer : MonoBehaviour
             {
                 if (closedSet.Contains(neighbor)) continue;
 
-                float tentativeGScore = (gScore.ContainsKey(current) ? gScore[current] : float.MaxValue) 
+                float tentativeGScore = (gScore.ContainsKey(current) ? gScore[current] : float.MaxValue)
                     + Vector3.Distance(current.Position, neighbor.Position);
 
                 if (!openSet.Contains(neighbor))
@@ -484,7 +684,6 @@ public class SmartPathVisualizer : MonoBehaviour
             }
         }
 
-        Debug.LogWarning($"No path found from {start.Name} to {goal.Name}");
         return null;
     }
 
@@ -496,14 +695,26 @@ public class SmartPathVisualizer : MonoBehaviour
     List<SmartPathNode> ReconstructPath(Dictionary<SmartPathNode, SmartPathNode> cameFrom, SmartPathNode current)
     {
         var path = new List<SmartPathNode> { current };
-        
         while (cameFrom.ContainsKey(current))
         {
             current = cameFrom[current];
             path.Insert(0, current);
         }
-        
         return path;
+    }
+
+    void OnRealtimeToggleChanged(bool isOn)
+    {
+        isRealtime = isOn;
+        currentPathState = PathState.NotStarted; // Reset state when toggling
+        
+        UpdateStatus(isOn ? "Realtime: ON (Dynamic paths)" : "Realtime: OFF (Static paths)");
+        
+        if (rack1Node != null && rack2Node != null)
+        {
+            ClearPathVisualsOnly();
+            CalculateAndVisualizeOptimalPath();
+        }
     }
 
     void DrawGrid()
@@ -519,7 +730,8 @@ public class SmartPathVisualizer : MonoBehaviour
                         new Vector3(neighbor.Position.x, LineHeight + 0.02f, neighbor.Position.z),
                         GridColor,
                         $"Grid_{node.Name}_{neighbor.Name}",
-                        LineWidth * 0.05f
+                        LineWidth * 0.05f,
+                        isDebug: true
                     );
                 }
             }
@@ -534,7 +746,7 @@ public class SmartPathVisualizer : MonoBehaviour
         {
             Vector3 start = boundingBoxCorners[i];
             Vector3 end = boundingBoxCorners[(i + 1) % 4];
-            DrawSingleLine(start, end, BoundingBoxColor, $"BBox_{i}", LineWidth * 0.2f);
+            DrawSingleLine(start, end, BoundingBoxColor, $"BBox_{i}", LineWidth * 0.2f, isDebug: true);
         }
     }
 
@@ -551,20 +763,23 @@ public class SmartPathVisualizer : MonoBehaviour
                         connColor = Color.red * 0.5f;
                     else if (node.Type == SmartPathNode.NodeType.Panel || neighbor.Type == SmartPathNode.NodeType.Panel)
                         connColor = Color.blue * 0.5f;
+                    else if (node.Type == SmartPathNode.NodeType.Player || neighbor.Type == SmartPathNode.NodeType.Player)
+                        connColor = Color.magenta * 0.5f;
                     
                     DrawSingleLine(
                         new Vector3(node.Position.x, LineHeight + 0.01f, node.Position.z),
                         new Vector3(neighbor.Position.x, LineHeight + 0.01f, neighbor.Position.z),
                         connColor,
                         $"Conn_{node.Name}_{neighbor.Name}",
-                        LineWidth * 0.08f
+                        LineWidth * 0.08f,
+                        isDebug: true
                     );
                 }
             }
         }
     }
 
-    void DrawPathLines(List<SmartPathNode> path, Color color, string lineName)
+        void DrawPathLines(List<SmartPathNode> path, Color color, string lineName)
     {
         if (path == null || path.Count < 2) return;
 
@@ -573,12 +788,12 @@ public class SmartPathVisualizer : MonoBehaviour
         
         LineRenderer lineRenderer = lineObj.AddComponent<LineRenderer>();
         
-        if (LineMaterial == null)
-        {
-            LineMaterial = new Material(Shader.Find("Unlit/Color"));
-        }
+        // Create a fresh material with Unlit/Color shader for EACH line
+        Material lineMaterial = new Material(Shader.Find("Unlit/Color"));
+        lineMaterial.color = color; // Set the material color directly
+        lineRenderer.material = lineMaterial;
         
-        lineRenderer.material = LineMaterial;
+        // Also set the line renderer colors
         lineRenderer.startColor = color;
         lineRenderer.endColor = color;
         lineRenderer.startWidth = LineWidth;
@@ -592,20 +807,11 @@ public class SmartPathVisualizer : MonoBehaviour
         }
         lineRenderer.SetPositions(positions);
         
-        // Add a glow effect with a second, wider line
-        GameObject glowObj = new GameObject(lineName + "_Glow");
-        glowObj.transform.SetParent(transform);
-        LineRenderer glowRenderer = glowObj.AddComponent<LineRenderer>();
-        glowRenderer.material = new Material(Shader.Find("Unlit/Color"));
-        glowRenderer.startColor = new Color(color.r, color.g, color.b, 0.3f);
-        glowRenderer.endColor = new Color(color.r, color.g, color.b, 0.3f);
-        glowRenderer.startWidth = LineWidth * 2f;
-        glowRenderer.endWidth = LineWidth * 2f;
-        glowRenderer.positionCount = path.Count;
-        glowRenderer.SetPositions(positions);
-        
+        // Store in path visuals list
+        pathVisuals.Add(lineObj);
         visualObjects.Add(lineObj);
-        visualObjects.Add(glowObj);
+        
+        Debug.Log($"Drawn path '{lineName}' with color {color}");
     }
 
     void DrawPathWaypoints(List<SmartPathNode> path, Color color)
@@ -613,25 +819,30 @@ public class SmartPathVisualizer : MonoBehaviour
         for (int i = 0; i < path.Count; i++)
         {
             float size = 0.2f;
-            if (i == 0 || i == path.Count - 1) size = 0.3f; // Start/end markers
+            if (i == 0 || i == path.Count - 1) size = 0.3f;
             
             DrawSphere(
                 new Vector3(path[i].Position.x, LineHeight + 0.1f, path[i].Position.z),
                 color,
                 size,
-                $"Waypoint_{path[i].Name}_{i}"
+                $"Waypoint_{path[i].Name}_{i}",
+                isPath: true
             );
         }
     }
 
-    void DrawSingleLine(Vector3 start, Vector3 end, Color color, string name, float width)
+    void DrawSingleLine(Vector3 start, Vector3 end, Color color, string name, float width, bool isDebug = false)
     {
         GameObject lineObj = new GameObject(name);
         lineObj.transform.SetParent(transform);
         
         LineRenderer lineRenderer = lineObj.AddComponent<LineRenderer>();
-        lineRenderer.material = new Material(Shader.Find("Unlit/Color"));
-        lineRenderer.material.color = color;
+        
+        // Create material with Unlit/Color shader
+        Material lineMaterial = new Material(Shader.Find("Unlit/Color"));
+        lineMaterial.color = color;
+        lineRenderer.material = lineMaterial;
+        
         lineRenderer.startColor = color;
         lineRenderer.endColor = color;
         lineRenderer.startWidth = width;
@@ -640,10 +851,20 @@ public class SmartPathVisualizer : MonoBehaviour
         lineRenderer.SetPosition(0, start);
         lineRenderer.SetPosition(1, end);
         
+        // Store in appropriate list
+        if (isDebug)
+        {
+            debugVisuals.Add(lineObj);
+        }
+        else
+        {
+            pathVisuals.Add(lineObj);
+        }
+        
         visualObjects.Add(lineObj);
     }
 
-    void DrawSphere(Vector3 position, Color color, float size, string name)
+    void DrawSphere(Vector3 position, Color color, float size, string name, bool isPath = false)
     {
         GameObject sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         sphere.name = name;
@@ -652,11 +873,27 @@ public class SmartPathVisualizer : MonoBehaviour
         sphere.transform.SetParent(transform);
         
         Renderer rend = sphere.GetComponent<Renderer>();
-        rend.material = new Material(Shader.Find("Standard"));
-        rend.material.color = color;
         
-        // Remove collider to avoid interference
+        // For spheres, use a more visible material
+        Material sphereMaterial = new Material(Shader.Find("Standard"));
+        sphereMaterial.color = color;
+        
+        // Enable emission for better visibility
+        sphereMaterial.EnableKeyword("_EMISSION");
+        sphereMaterial.SetColor("_EmissionColor", color * 0.5f);
+        rend.material = sphereMaterial;
+        
         Destroy(sphere.GetComponent<Collider>());
+        
+        // Store in appropriate list
+        if (isPath)
+        {
+            pathVisuals.Add(sphere);
+        }
+        else
+        {
+            debugVisuals.Add(sphere);
+        }
         
         visualObjects.Add(sphere);
     }
@@ -669,6 +906,45 @@ public class SmartPathVisualizer : MonoBehaviour
                 Destroy(obj);
         }
         visualObjects.Clear();
+        pathVisuals.Clear();
+        debugVisuals.Clear();
+        Debug.Log("Cleared all visuals");
+    }
+
+    void ClearPathVisualsOnly()
+    {
+        // Clear only path visuals
+        foreach (var obj in pathVisuals)
+        {
+            if (obj != null)
+            {
+                if (visualObjects.Contains(obj))
+                {
+                    visualObjects.Remove(obj);
+                }
+                Destroy(obj);
+            }
+        }
+        pathVisuals.Clear();
+        Debug.Log("Cleared path visuals only");
+    }
+
+    void ClearDebugVisualsOnly()
+    {
+        // Clear only debug visuals
+        foreach (var obj in debugVisuals)
+        {
+            if (obj != null)
+            {
+                if (visualObjects.Contains(obj))
+                {
+                    visualObjects.Remove(obj);
+                }
+                Destroy(obj);
+            }
+        }
+        debugVisuals.Clear();
+        Debug.Log("Cleared debug visuals only");
     }
 
     void LogConnectivityInfo()
@@ -685,20 +961,13 @@ public class SmartPathVisualizer : MonoBehaviour
         Debug.Log("===========================");
     }
 
-    void OnRealtimeToggleChanged(bool isOn)
-    {
-        isRealtime = isOn;
-        UpdateStatus(isOn ? "Realtime: ON" : "Realtime: OFF");
-    }
-
     void OnDebugConnections()
     {
         LogConnectivityInfo();
-        ClearVisuals();
+        ClearVisuals(); // Clear everything for debug view
         DrawGrid();
         DrawAllConnections();
         
-        // Mark different node types
         foreach (var node in nodes)
         {
             Color markerColor = Color.gray;
@@ -714,6 +983,10 @@ public class SmartPathVisualizer : MonoBehaviour
                     markerColor = Color.blue;
                     size = 0.5f;
                     break;
+                case SmartPathNode.NodeType.Player:
+                    markerColor = Color.magenta;
+                    size = 0.6f;
+                    break;
                 case SmartPathNode.NodeType.Grid:
                     markerColor = Color.green * 0.7f;
                     size = 0.1f;
@@ -724,7 +997,8 @@ public class SmartPathVisualizer : MonoBehaviour
                 new Vector3(node.Position.x, LineHeight + 0.15f, node.Position.z),
                 markerColor,
                 size,
-                $"Debug_{node.Name}"
+                $"Debug_{node.Name}",
+                isPath: false
             );
         }
         
@@ -754,7 +1028,7 @@ public class SmartPathVisualizer : MonoBehaviour
 
 public class SmartPathNode
 {
-    public enum NodeType { Rack, Panel, Boundary, Grid, Waypoint }
+    public enum NodeType { Rack, Panel, Boundary, Grid, Waypoint, Player }
     
     public string Name;
     public GameObject Obj;
